@@ -4,6 +4,7 @@
 package play.libs.ws;
 
 
+import akka.pattern.CircuitBreaker;
 import com.fasterxml.jackson.databind.JsonNode;
 import play.libs.F;
 
@@ -108,6 +109,12 @@ public interface WSRequestHolder {
     WSRequestHolder setFollowRedirects(Boolean followRedirects);
 
     WSRequestHolder setVirtualHost(String virtualHost);
+
+    WSRequestHolder setCircuitBreaker(CircuitBreaker breaker);
+
+    WSRequestHolder setFallback(WSRequestHolder backupWs);
+
+    
 
     @Deprecated
     WSRequestHolder setTimeout(int timeout);

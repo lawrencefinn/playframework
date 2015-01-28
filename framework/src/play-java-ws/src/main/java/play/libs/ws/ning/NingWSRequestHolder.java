@@ -4,6 +4,7 @@
 
 package play.libs.ws.ning;
 
+import akka.pattern.CircuitBreaker;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.ning.http.client.FluentCaseInsensitiveStringsMap;
 import com.ning.http.client.PerRequestConfig;
@@ -12,6 +13,7 @@ import org.jboss.netty.handler.codec.http.HttpHeaders;
 import play.libs.F;
 import play.libs.Json;
 import play.libs.ws.*;
+import scala.concurrent.Future;
 
 import java.io.File;
 import java.io.InputStream;
@@ -19,6 +21,7 @@ import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.util.*;
+import java.util.concurrent.Callable;
 
 /**
  * provides the User facing API for building WS request.
@@ -36,6 +39,8 @@ public class NingWSRequestHolder implements WSRequestHolder {
     private WSAuthScheme scheme = null;
     private WSSignatureCalculator calculator = null;
     private NingWSClient client = null;
+    private CircuitBreaker breaker = null;
+    private WSRequestHolder fallback = null;
 
     private int timeout = 0;
     private Boolean followRedirects = null;
@@ -198,6 +203,18 @@ public class NingWSRequestHolder implements WSRequestHolder {
     @Override
     public WSRequestHolder setVirtualHost(String virtualHost) {
         this.virtualHost = virtualHost;
+        return this;
+    }
+
+    @Override
+    public WSRequestHolder setCircuitBreaker(CircuitBreaker breaker) {
+        this.breaker = breaker;
+        return this;
+    }
+
+    @Override
+    public WSRequestHolder setFallback(WSRequestHolder backupWs) {
+        this.fallback = backupWs;
         return this;
     }
 
@@ -534,6 +551,7 @@ public class NingWSRequestHolder implements WSRequestHolder {
     }
 
     private F.Promise<play.libs.ws.WSResponse> executeString(String body) {
+        setBody(body);
         FluentCaseInsensitiveStringsMap headers = new FluentCaseInsensitiveStringsMap(this.headers);
 
         // Detect and maybe add charset
@@ -561,6 +579,7 @@ public class NingWSRequestHolder implements WSRequestHolder {
     }
 
     private F.Promise<play.libs.ws.WSResponse> executeJson(JsonNode body) {
+        setBody(body);
         FluentCaseInsensitiveStringsMap headers = new FluentCaseInsensitiveStringsMap(this.headers);
         headers.replace(HttpHeaders.Names.CONTENT_TYPE, "application/json; charset=utf-8");
         String bodyStr = Json.stringify(body);
@@ -579,12 +598,14 @@ public class NingWSRequestHolder implements WSRequestHolder {
     }
 
     private F.Promise<play.libs.ws.WSResponse> executeIS(InputStream body) {
+        setBody(body);
         NingWSRequest req = new NingWSRequest(client, method, url, queryParameters, headers)
                 .setBody(body);
         return execute(req);
     }
 
     private F.Promise<play.libs.ws.WSResponse> executeFile(File body) {
+        setBody(body);
         NingWSRequest req = new NingWSRequest(client, method, url, queryParameters, headers)
                 .setBody(body);
         return execute(req);
@@ -607,6 +628,44 @@ public class NingWSRequestHolder implements WSRequestHolder {
         if (this.calculator != null)
             this.calculator.sign(req);
 
-        return req.execute();
+        F.Promise<WSResponse> result;
+        final NingWSRequest innerReq = req;
+        if (breaker != null){
+            Future<WSResponse> wsResponseFuture = breaker.callWithCircuitBreaker(new Callable<Future<WSResponse>>() {
+                @Override
+                public Future<WSResponse> call() throws Exception {
+                    return innerReq.execute().wrapped();
+                }
+            });
+            result = F.Promise.wrap(wsResponseFuture);
+        } else {
+            result = req.execute();
+        }
+        if (fallback != null){
+            result = result.recoverWith(new F.Function<Throwable, F.Promise<WSResponse>>() {
+                @Override
+                public F.Promise<WSResponse> apply(Throwable throwable) throws Throwable {
+                    return forwardToFallback(innerReq);
+                }
+            });
+        }
+        return result;
+    }
+
+    private F.Promise<WSResponse> forwardToFallback(NingWSRequest req){
+        fallback.setMethod(req.getMethod());
+        if (body == null) {
+        } else if (body instanceof String) {
+            fallback.setBody((String) body);
+        } else if (body instanceof JsonNode) {
+            fallback.setBody((JsonNode) body);
+        } else if (body instanceof File) {
+            fallback.setBody((File) body);
+        } else if (body instanceof InputStream) {
+            fallback.setBody((InputStream) body);
+        } else {
+            throw new IllegalStateException("Impossible body: " + body);
+        }
+        return fallback.execute();
     }
 }
