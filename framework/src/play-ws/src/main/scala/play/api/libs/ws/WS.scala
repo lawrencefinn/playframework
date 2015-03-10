@@ -5,6 +5,8 @@ package play.api.libs.ws
 
 import java.net.URI
 
+import akka.pattern.CircuitBreaker
+
 import scala.concurrent.{ Future, ExecutionContext }
 
 import java.io.File
@@ -481,6 +483,10 @@ trait WSRequestHolder {
    * Sets the method for this request
    */
   def withMethod(method: String): WSRequestHolder
+
+  def withCircuitBreaker(circuitBreaker: CircuitBreaker): WSRequestHolder
+
+  def withFallback(fallback: WSRequestHolder): WSRequestHolder
 
   /**
    * performs a get

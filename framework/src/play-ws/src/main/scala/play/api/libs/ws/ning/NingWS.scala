@@ -5,6 +5,7 @@ package play.api.libs.ws.ning
 
 import javax.inject.{ Inject, Provider, Singleton }
 
+import akka.pattern.CircuitBreaker
 import com.ning.http.client.{ Response => AHCResponse, ProxyServer => AHCProxyServer, _ }
 import com.ning.http.client.cookie.{ Cookie => AHCCookie }
 import com.ning.http.client.Realm.{ RealmBuilder, AuthScheme }
@@ -45,7 +46,7 @@ case class NingWSClient(config: AsyncHttpClientConfig) extends WSClient {
 
   def close() = asyncHttpClient.close()
 
-  def url(url: String): WSRequestHolder = NingWSRequestHolder(this, url, "GET", EmptyBody, Map(), Map(), None, None, None, None, None, None)
+  def url(url: String): WSRequestHolder = NingWSRequestHolder(this, url, "GET", EmptyBody, Map(), Map(), None, None, None, None, None, None, None, None)
 }
 
 object NingWSClient {
@@ -395,7 +396,9 @@ case class NingWSRequestHolder(client: NingWSClient,
     followRedirects: Option[Boolean],
     requestTimeout: Option[Int],
     virtualHost: Option[String],
-    proxyServer: Option[WSProxyServer]) extends WSRequestHolder {
+    proxyServer: Option[WSProxyServer],
+    circuitBreaker: Option[CircuitBreaker],
+    fallback: Option[WSRequestHolder]) extends WSRequestHolder {
 
   def sign(calc: WSSignatureCalculator): WSRequestHolder = copy(calc = Some(calc))
 
@@ -431,7 +434,21 @@ case class NingWSRequestHolder(client: NingWSClient,
   def withMethod(method: String) = copy(method = method)
 
   def execute(): Future[WSResponse] = {
-    prepare().execute
+    import play.api.libs.concurrent.Execution.Implicits.defaultContext
+    val result = circuitBreaker match {
+      case Some(breaker) => {
+        breaker.withCircuitBreaker(prepare().execute)
+      }
+      case None => prepare().execute
+    }
+    fallback match {
+      case Some(fall) => {
+        result.recoverWith({
+          case _ => fall.withBody(body).execute()
+        })
+      }
+      case None => result
+    }
   }
 
   def stream(): Future[(WSResponseHeaders, Enumerator[Array[Byte]])] = {
@@ -511,6 +528,9 @@ case class NingWSRequestHolder(client: NingWSClient,
     ningServer
   }
 
+  override def withCircuitBreaker(circuitBreaker: CircuitBreaker): WSRequestHolder = copy(circuitBreaker = Some(circuitBreaker))
+
+  override def withFallback(fallback: WSRequestHolder): WSRequestHolder = copy(fallback = Some(fallback))
 }
 
 class NingWSModule extends Module {
