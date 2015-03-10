@@ -355,7 +355,17 @@ package play.api.mvc {
     lazy val toMap: Map[String, Seq[String]] = {
       import collection.immutable.TreeMap
       import play.core.utils.CaseInsensitiveOrdered
-      TreeMap(data: _*)(CaseInsensitiveOrdered)
+      var map  = new TreeMap[String, Seq[String]]()(CaseInsensitiveOrdered)
+      data.foreach(item => {
+        val itemKey = item._1
+        var itemValues = item._2
+        itemValues = map.get(itemKey) match {
+          case None => itemValues
+          case Some(seq) => seq ++ itemValues
+        }
+        map = map + (itemKey -> itemValues)
+      })
+      map
     }
 
     /**
